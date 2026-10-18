@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Odak Bekçisi 👀 — Kasiyer Önleyici</title>
-  <meta name="description" content="Kamerayla göz ve kafa takibi yapan akıllı odak asistanı. Ekrandan veya tabletten uzaklaşıp telefona bakarsan BİM, A101 veya ŞOK iş başvurusu açar!" />
+  <meta name="description" content="Kamerayla 5 boyutlu göz, iris yakınsaması, göz kapağı ve nesne takibi yapan akıllı odak asistanı. Ekrandan ayrılıp elindeki telefona veya nesneye bakarsan BİM, A101 veya ŞOK iş başvurusu açar!" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>👀</text></svg>" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="preconnect" href="https://storage.googleapis.com" crossorigin />
@@ -14,8 +14,8 @@
   <header>
     <div class="headerTop">
       <div>
-        <h1>👀 Odak Bekçisi <span class="badge">v2.0 Turbo</span></h1>
-        <p class="sub">Ekrana veya tablete bak. Telefona ya da etrafa dalarsan… kariyer fırsatları seni bekliyor 🛒</p>
+        <h1>👀 Odak Bekçisi <span class="badge">v3.0 Pro • 5D Takip</span></h1>
+        <p class="sub">Ekrana veya tablete odaklan. Elindeki telefona, başka bir nesneye veya etrafa bakarsan… kariyer fırsatları seni bekliyor 🛒</p>
       </div>
       <div class="headerActions">
         <button id="pipBtn" class="ghost smallBtn" disabled title="Arka planda yavaşlamaması için küçük yüzen pencere açar">📌 Mini Pencere (PiP)</button>
@@ -48,9 +48,9 @@
 
       <div class="meter">
         <div class="meterLabel">
-          <span>Odak alanına uzaklık</span><span id="distVal">–</span>
+          <span>Odak sapma skoru (Bakış + Göz Eğimi + Yakın Odak)</span><span id="distVal">–</span>
         </div>
-        <div class="bar"><div id="distBar"></div><div class="threshold" title="Ceza sınırı"></div></div>
+        <div class="bar"><div id="distBar"></div><div class="threshold" title="Ceza sınırı (1.0x)"></div></div>
         <div class="meterLabel small">
           <span>Ceza sayacı</span><span id="awayVal">0.0 sn</span>
         </div>
@@ -59,15 +59,20 @@
 
       <div class="card mapCard">
         <div class="mapHeader">
-          <h2>Canlı Bakış Haritası</h2>
+          <h2>5D Canlı Bakış & Derinlik Haritası</h2>
           <small class="legend">
             <span><i style="background:#4dabf7"></i>Ekran</span>
             <span><i style="background:#b197fc"></i>Tablet</span>
             <span><i style="background:#ffa94d"></i>Ek alan</span>
-            <span><i style="background:#ff6b81"></i>Telefon (Yasak)</span>
+            <span><i style="background:#ff5c77"></i>El / Telefon (Yasak)</span>
           </small>
         </div>
         <canvas id="map" width="640" height="280"></canvas>
+        <div class="telemetryRow">
+          <span>Göz Eğimi: <b id="telEyeDown">–</b></span>
+          <span>Yakın Odak (Vergence): <b id="telVerg">–</b></span>
+          <span>Kamera Nesne: <b id="telObj">Temiz</b></span>
+        </div>
       </div>
 
       <div class="stats">
@@ -85,38 +90,41 @@
       </div>
 
       <div class="card">
-        <h2>2. Akıllı Kalibrasyon</h2>
+        <h2>2. Yüksek Hassasiyetli 5D Kalibrasyon</h2>
         <p class="hint">
-          Normal çalışma duruşunla otur. <b>Ekran</b> için kırmızı noktayı gözlerinle takip et.
-          <b>Tablet / Ek alan</b> için ilk bip sesinden ikinci bip sesine kadar o alana bak.
+          <b>1) Ekranı kalibre et:</b> Kırmızı noktayı gözlerinle takip et.<br/>
+          <b>2) 🚫 El / Telefon kalibrasyonu (Önerilen):</b> Ekranın önünde elinde telefon veya herhangi bir nesne tutuyormuş gibi 4 saniye eline bak. Sistem o bakış derinliğini ve göz eğimini ekran alanından <b>kesip çıkarır</b>!
         </p>
         <div class="row">
-          <button id="cal-screen" class="calBtn" disabled>📺 Ekranı kalibre et</button>
+          <button id="cal-screen" class="calBtn" disabled>📺 1. Ekranı kalibre et</button>
           <span id="tag-screen" class="tag">yok</span>
           <button class="ghost clr" data-r="screen" title="Sıfırla">✕</button>
         </div>
         <div class="row">
-          <button id="cal-tablet" class="calBtn" disabled>📲 Tableti kalibre et</button>
+          <button id="cal-phone" class="calBtn dangerBtn" disabled>🚫 2. Elde Telefon / Nesne Bakışını Tanıt (Yasakla)</button>
+          <span id="tag-phone" class="tag">yok</span>
+          <button class="ghost clr" data-r="phone" title="Sıfırla">✕</button>
+        </div>
+        <div class="row">
+          <button id="cal-tablet" class="calBtn" disabled>📲 Tableti kalibre et (İzinli)</button>
           <span id="tag-tablet" class="tag">yok</span>
           <button class="ghost clr" data-r="tablet" title="Sıfırla">✕</button>
         </div>
         <div class="row">
-          <button id="cal-extra" class="calBtn" disabled>➕ Ek alan ekle</button>
+          <button id="cal-extra" class="calBtn" disabled>➕ Ek alan ekle (İzinli)</button>
           <span id="tag-extra" class="tag">yok</span>
           <button class="ghost clr" data-r="extra" title="Sıfırla">✕</button>
         </div>
-        <div class="row">
-          <button id="cal-phone" class="calBtn dangerBtn" disabled>📱 Telefon yerini tanıt (Opsiyonel)</button>
-          <span id="tag-phone" class="tag">yok</span>
-          <button class="ghost clr" data-r="phone" title="Sıfırla">✕</button>
-        </div>
-        <p class="hint">💡 <b>El çenede koruması aktif:</b> Sadece üst yüz ve göz bebekleri analiz edilir; elini çenene yaslasan veya ekranın en altına baksan bile yanlış ceza yemezsin.</p>
+        <p class="hint">🔬 <b>5D Koruma:</b> Sadece sağ/sol açıya değil; <b>göz bebeği yakınsaması (yakındaki nesneye odaklanma)</b>, <b>göz kapağı eğimi</b> ve <b>kamerada telefon/nesne</b> görünmesine de bakar.</p>
       </div>
 
       <div class="card">
         <h2>3. Hassasiyet & Ayarlar</h2>
-        <label>Kenar hoşgörü payı (yüksek = daha esnek): <b id="tolVal"></b>
-          <input type="range" id="tol" min="3" max="25" step="1" />
+        <label>Sınır toleransı (düşük = çok sıkı, yüksek = esnek): <b id="tolVal"></b>
+          <input type="range" id="tol" min="1.5" max="12" step="0.5" />
+        </label>
+        <label>Elde nesne / aşağı bakış hassasiyeti: <b id="handSensVal"></b>
+          <input type="range" id="handSens" min="0.5" max="2.5" step="0.1" />
         </label>
         <label>Kaç saniye bakmazsan yakalansın: <b id="delayVal"></b>
           <input type="range" id="delay" min="0.5" max="10" step="0.5" />

@@ -242,6 +242,7 @@ button.smallBtn { padding: 7px 11px; font-size: 12.5px; }
   white-space: nowrap;
 }
 .tag.done { background: #103327; color: #5ef0a8; font-weight: 600; }
+.tag.dangerDone { background: #3b1520; color: #ff6b81; font-weight: 600; }
 
 label { display: block; font-size: 13px; color: #b8c0d4; margin: 10px 0; }
 label input[type=range] {
@@ -287,6 +288,18 @@ label.check {
   border-radius: 10px;
   display: block;
 }
+.telemetryRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #1e2333;
+  font-size: 11.5px;
+  color: #8f98ad;
+  flex-wrap: wrap;
+}
+.telemetryRow b { color: #d5d9e8; }
 .legend {
   display: flex;
   gap: 10px;
