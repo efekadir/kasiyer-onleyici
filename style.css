@@ -341,9 +341,26 @@ label.check {
 }
 .calBox {
   text-align: center;
-  max-width: 520px;
+  max-width: 560px;
   padding: 24px;
   pointer-events: auto;
+}
+.calPhaseBadge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: #232b42;
+  color: #74c0fc;
+  margin-bottom: 12px;
+  border: 1px solid #364fc7;
+}
+.calPhaseBadge.danger {
+  background: #3b1520;
+  color: #ff8787;
+  border-color: #c92a2a;
 }
 #calText {
   font-size: 20px;
