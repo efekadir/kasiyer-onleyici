@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Odak Bekçisi 👀 — Kasiyer Önleyici</title>
+  <meta name="description" content="Kamerayla göz ve kafa takibi yapan akıllı odak asistanı. Ekrandan veya tabletten uzaklaşıp telefona bakarsan BİM, A101 veya ŞOK iş başvurusu açar!" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>👀</text></svg>" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="preconnect" href="https://storage.googleapis.com" crossorigin />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="headerTop">
+      <div>
+        <h1>👀 Odak Bekçisi <span class="badge">v2.0 Turbo</span></h1>
+        <p class="sub">Ekrana veya tablete bak. Telefona ya da etrafa dalarsan… kariyer fırsatları seni bekliyor 🛒</p>
+      </div>
+      <div class="headerActions">
+        <button id="pipBtn" class="ghost smallBtn" disabled title="Arka planda yavaşlamaması için küçük yüzen pencere açar">📌 Mini Pencere (PiP)</button>
+        <button id="shareBtn" class="ghost smallBtn" title="Site bağlantısını kopyala">🔗 Linki Kopyala</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="popupWarn" class="banner hidden">
+    ⚠️ <b>Tarayıcı açılır pencereyi (pop-up) engelledi!</b> Ceza sekmesinin otomatik açılabilmesi için adres çubuğunun sağındaki engellenen pencere simgesine tıklayıp
+    <b>"Bu siteden açılır pencerelere her zaman izin ver"</b> seçeneğini işaretle.
+  </div>
+
+  <main>
+    <section class="left">
+      <div class="videoWrap">
+        <video id="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div id="hudBadge" class="hudBadge hidden">0 FPS</div>
+        <div id="placeholder">
+          <div class="placeholderInner">
+            <span class="bigEmoji">📷</span>
+            <strong>Kamera kapalı</strong>
+            <small>Analiz tamamen cihazında (tarayıcı içinde) çalışır, hiçbir görüntü sunucuya gönderilmez.</small>
+          </div>
+        </div>
+      </div>
+
+      <div id="status" class="status idle">Başlamak için “▶️ Kamerayı Başlat” butonuna bas</div>
+
+      <div class="meter">
+        <div class="meterLabel">
+          <span>Odak alanına uzaklık</span><span id="distVal">–</span>
+        </div>
+        <div class="bar"><div id="distBar"></div><div class="threshold" title="Ceza sınırı"></div></div>
+        <div class="meterLabel small">
+          <span>Ceza sayacı</span><span id="awayVal">0.0 sn</span>
+        </div>
+        <div class="bar"><div id="awayBar" class="away"></div></div>
+      </div>
+
+      <div class="card mapCard">
+        <div class="mapHeader">
+          <h2>Canlı Bakış Haritası</h2>
+          <small class="legend">
+            <span><i style="background:#4dabf7"></i>Ekran</span>
+            <span><i style="background:#b197fc"></i>Tablet</span>
+            <span><i style="background:#ffa94d"></i>Ek alan</span>
+            <span><i style="background:#ff6b81"></i>Telefon (Yasak)</span>
+          </small>
+        </div>
+        <canvas id="map" width="640" height="280"></canvas>
+      </div>
+
+      <div class="stats">
+        <div><span id="count">0</span><small>yakalanma</small></div>
+        <div><span id="focusTime">0:00</span><small>odaklı süre</small></div>
+        <div><span id="focusPct">%100</span><small>odak oranı</small></div>
+      </div>
+    </section>
+
+    <section class="right">
+      <div class="card">
+        <h2>1. Başlat</h2>
+        <button id="startBtn" class="primary">▶️ Kamerayı Başlat</button>
+        <p id="loadMsg" class="hint"></p>
+      </div>
+
+      <div class="card">
+        <h2>2. Akıllı Kalibrasyon</h2>
+        <p class="hint">
+          Normal çalışma duruşunla otur. <b>Ekran</b> için kırmızı noktayı gözlerinle takip et.
+          <b>Tablet / Ek alan</b> için ilk bip sesinden ikinci bip sesine kadar o alana bak.
+        </p>
+        <div class="row">
+          <button id="cal-screen" class="calBtn" disabled>📺 Ekranı kalibre et</button>
+          <span id="tag-screen" class="tag">yok</span>
+          <button class="ghost clr" data-r="screen" title="Sıfırla">✕</button>
+        </div>
+        <div class="row">
+          <button id="cal-tablet" class="calBtn" disabled>📲 Tableti kalibre et</button>
+          <span id="tag-tablet" class="tag">yok</span>
+          <button class="ghost clr" data-r="tablet" title="Sıfırla">✕</button>
+        </div>
+        <div class="row">
+          <button id="cal-extra" class="calBtn" disabled>➕ Ek alan ekle</button>
+          <span id="tag-extra" class="tag">yok</span>
+          <button class="ghost clr" data-r="extra" title="Sıfırla">✕</button>
+        </div>
+        <div class="row">
+          <button id="cal-phone" class="calBtn dangerBtn" disabled>📱 Telefon yerini tanıt (Opsiyonel)</button>
+          <span id="tag-phone" class="tag">yok</span>
+          <button class="ghost clr" data-r="phone" title="Sıfırla">✕</button>
+        </div>
+        <p class="hint">💡 <b>El çenede koruması aktif:</b> Sadece üst yüz ve göz bebekleri analiz edilir; elini çenene yaslasan veya ekranın en altına baksan bile yanlış ceza yemezsin.</p>
+      </div>
+
+      <div class="card">
+        <h2>3. Hassasiyet & Ayarlar</h2>
+        <label>Kenar hoşgörü payı (yüksek = daha esnek): <b id="tolVal"></b>
+          <input type="range" id="tol" min="3" max="25" step="1" />
+        </label>
+        <label>Kaç saniye bakmazsan yakalansın: <b id="delayVal"></b>
+          <input type="range" id="delay" min="0.5" max="10" step="0.5" />
+        </label>
+        <label>İki ceza arası bekleme süresi: <b id="cooldownVal"></b>
+          <input type="range" id="cooldown" min="5" max="180" step="5" />
+        </label>
+        <label>Uyarı ses seviyesi: <b id="volVal"></b>
+          <input type="range" id="vol" min="0" max="1" step="0.05" />
+        </label>
+        <label class="check"><input type="checkbox" id="faceLost" /> Yüz kameradan çıkarsa da yakala</label>
+        <label class="check"><input type="checkbox" id="ecoMode" /> ⚡ Düşük güç modu (daha az pil & CPU kullanımı)</label>
+        <div class="row btnRow">
+          <button id="testSound" class="ghost">🔔 Sesi dene</button>
+          <button id="testOpen" class="ghost">🛒 Cezayı dene (Pop-up izni)</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Yakalanma Kaydı</h2>
+        <ul id="log"><li class="emptyLog">Henüz yakalanmadın, böyle devam! 🎯</li></ul>
+      </div>
+    </section>
+  </main>
+
+  <div id="calOverlay" class="hidden">
+    <div id="dot" class="hidden"></div>
+    <div class="calBox">
+      <p id="calText"></p>
+      <div class="calProgressWrap"><div id="calProgress"></div></div>
+      <button id="calCancel" class="ghost smallBtn">İptal (ESC)</button>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
