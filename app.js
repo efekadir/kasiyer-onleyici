@@ -1,7 +1,5 @@
 import {
   FaceLandmarker,
-  HandLandmarker,
-  ObjectDetector,
   FilesetResolver,
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
@@ -13,11 +11,6 @@ const JOB_SITES = [
 ];
 const WASM_URL       = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const FACE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
-const HAND_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const OBJ_MODEL_URL  = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite";
-
-// Kamerada elde tutulunca yakalanacak tüm nesneler (person ve chair/couch hariç her türlü elde tutulabilir nesne)
-const IGNORED_OBJECTS = new Set(["person", "chair", "couch", "bed", "dining table", "tv", "potted plant"]);
 
 const MAX_POINTS = 360;
 
@@ -28,33 +21,32 @@ const ALLOWED_REGIONS = {
 };
 const ALL_REGIONS = {
   ...ALLOWED_REGIONS,
-  phone:  { label: "Elde Nesne/Telefon", color: "#ff5c77" },
+  phone:  { label: "Telefon / El", color: "#ff5c77" },
 };
 
-// v4.0 yeni depolama anahtarı (eski hatalı kalibrasyonları otomatik temizler)
 const DEFAULTS = {
-  tol: 3.5,
-  handSens: 1.6,
+  tol: 5.5,
+  downGain: 1.4,
   delay: 2.0,
   cooldown: 25,
-  vol: 0.25,
+  vol: 0.35,
   faceLost: true,
-  handDetect: true,
   ecoMode: false,
 };
-const settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("kp_settings_v4") || "{}") };
+const settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("kp_settings_v5") || "{}") };
 const calib = {
   screen: [], tablet: [], extra: [], phone: [],
-  ...JSON.parse(localStorage.getItem("kp_calib_v4") || "{}"),
+  ...JSON.parse(localStorage.getItem("kp_calib_v5") || "{}"),
 };
 for (const k in ALL_REGIONS) if (!Array.isArray(calib[k])) calib[k] = [];
 
 let hulls = {};
-let calibBounds = { x0: -28, x1: 28, y0: -20, y1: 32, hasPoints: false };
+let centers = {};
+let calibBounds = { x0: -30, x1: 30, y0: -22, y1: 38, hasPoints: false };
 
 // ───────────────────────── 1-Euro Adaptif Filtre ─────────────────────────
 class OneEuroFilter {
-  constructor(minCutoff = 1.3, beta = 0.055, dCutoff = 1.0) {
+  constructor(minCutoff = 1.25, beta = 0.05, dCutoff = 1.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.dCutoff = dCutoff;
@@ -89,12 +81,8 @@ class OneEuroFilter {
   }
 }
 
-const fX    = new OneEuroFilter(1.3, 0.06, 1.0);
-const fY    = new OneEuroFilter(1.25, 0.06, 1.0);
-const fHeadY = new OneEuroFilter(1.2, 0.05, 1.0);
-const fDown = new OneEuroFilter(1.2, 0.05, 1.0);
-const fOpen = new OneEuroFilter(1.1, 0.04, 1.0);
-const fVerg = new OneEuroFilter(1.0, 0.03, 1.0);
+const fX = new OneEuroFilter(1.25, 0.055, 1.0);
+const fY = new OneEuroFilter(1.20, 0.055, 1.0);
 
 // ───────────────────────── DOM & Önbellekli Yazıcılar ─────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -134,20 +122,19 @@ function setStatus(cls, text) {
 }
 
 // ───────────────────────── Durum ─────────────────────────
-let landmarker = null, handLandmarker = null, objDetector = null, audioCtx = null;
+let landmarker = null, audioCtx = null;
 let running = false, calibrating = false, cancelCalib = false;
-let lastVideoTime = -1, lastTickAt = null, lastAuxCheckAt = 0;
-let activeThreat = null, activeThreatUntil = 0, activeBoxes = [];
-let gaze = null;                 // { x, y, headY, lookDown, open, verg }
+let lastVideoTime = -1, lastTickAt = null;
+let gaze = null;                 // { x, y, downDeg }
 let lastValidRaw = null, closedMs = 0;
 let isAway = false, awayMs = 0, lastTrigger = -Infinity, faceLostFired = false;
 let count = 0, focusMs = 0, totalMs = 0;
-let sampling = null;             // { samples: [[x, y, headY, lookDown, open, verg]] }
+let sampling = null;             // { samples: [[x, y]] }
 let fpsFrames = 0, fpsLastAt = performance.now();
 
 // ───────────────────────── Ayar Arayüzü ─────────────────────────
 const getTickMs = () => (settings.ecoMode ? 85 : 42);
-const save = () => localStorage.setItem("kp_settings_v4", JSON.stringify(settings));
+const save = () => localStorage.setItem("kp_settings_v5", JSON.stringify(settings));
 
 function bindRange(id, key, fmt) {
   const el = $(id);
@@ -163,16 +150,13 @@ function bindRange(id, key, fmt) {
   show();
 }
 bindRange("tol", "tol", (v) => `${v}°`);
-bindRange("handSens", "handSens", (v) => `${v.toFixed(1)}x`);
+bindRange("downGain", "downGain", (v) => `${v.toFixed(1)}x`);
 bindRange("delay", "delay", (v) => `${v} sn`);
 bindRange("cooldown", "cooldown", (v) => `${v} sn`);
 bindRange("vol", "vol", (v) => `%${Math.round(v * 100)}`);
 
 $("faceLost").checked = settings.faceLost;
 $("faceLost").addEventListener("change", (e) => { settings.faceLost = e.target.checked; save(); });
-
-$("handDetect").checked = settings.handDetect !== false;
-$("handDetect").addEventListener("change", (e) => { settings.handDetect = e.target.checked; save(); });
 
 $("ecoMode").checked = !!settings.ecoMode;
 $("ecoMode").addEventListener("change", (e) => {
@@ -182,7 +166,7 @@ $("ecoMode").addEventListener("change", (e) => {
 });
 
 function saveCalib() {
-  localStorage.setItem("kp_calib_v4", JSON.stringify(calib));
+  localStorage.setItem("kp_calib_v5", JSON.stringify(calib));
   rebuildHulls();
   for (const k in ALL_REGIONS) {
     const tag = $("tag-" + k);
@@ -194,101 +178,114 @@ function saveCalib() {
   }
 }
 
-// ───────────────────────── Ses (Market Kasiyer Barkod Okuyucu "Dıt-Dıt") ─────────────────────────
-let scanNodes = [];
+// ───────────────────────── Gerçekçi PCM Market Barkod Okuyucu Sesi ("DIT! ... DI-DIT!") ─────────────────────────
+let activeScanSources = [];
+
 function ensureAudio() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === "suspended") audioCtx.resume();
 }
-function tone(freq, start, dur, vol) {
-  if (vol <= 0.001) return;
-  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-  o.type = "sine";
-  o.frequency.value = freq;
-  g.gain.setValueAtTime(0.0001, start);
-  g.gain.linearRampToValueAtTime(vol, start + 0.015);
-  g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
-  o.connect(g).connect(audioCtx.destination);
-  o.start(start);
-  o.stop(start + dur + 0.04);
-}
-/** Tek bir gerçekçi süpermarket barkod okuyucu (piezo buzzer ~2580 Hz) "DIT!" sesi */
-function barcodeBeep(start, dur, vol) {
-  if (vol <= 0.001) return;
-  const freq = 2580 + (Math.random() - 0.5) * 35; // gerçekçi mikro frekans farkı
 
-  // Piezo tınısı: kare dalga + rezonant bant geçiren filtre + saf sinüs gövde
-  const oscSq = audioCtx.createOscillator();
-  const oscSin = audioCtx.createOscillator();
-  const filter = audioCtx.createBiquadFilter();
-  const gain = audioCtx.createGain();
+/**
+ * Gerçek bir market kasası lazer barkod okuyucu (Zebra / Datalogic ~2720 Hz piezo buzzer)
+ * ses dalgasını 44.1 kHz PCM AudioBuffer olarak doğrudan örnekler:
+ * - İlk 3.5 ms piezo kristal "çıt" darbesi (chirp)
+ * - Keskin tek/çift harmonikli kare-darbe (pulse) tınısı
+ * - 13 ms kasa tezgahı akustik yansıması (slapback)
+ */
+function createBarcodeBuffer(durSec, freqHz, vol) {
+  const sr = audioCtx.sampleRate;
+  const totalSec = durSec + 0.025; // kasa akustik yansıma payı
+  const len = Math.floor(sr * totalSec);
+  const buf = audioCtx.createBuffer(1, len, sr);
+  const data = buf.getChannelData(0);
 
-  oscSq.type = "square";
-  oscSq.frequency.setValueAtTime(freq, start);
-  oscSin.type = "sine";
-  oscSin.frequency.setValueAtTime(freq, start);
+  const mainSamples = Math.floor(sr * durSec);
+  const echoDelay = Math.floor(sr * 0.013); // 13ms kasa yansıması
+  const amp = Math.min(vol * 0.95, 1.0);
 
-  filter.type = "bandpass";
-  filter.frequency.setValueAtTime(freq, start);
-  filter.Q.setValueAtTime(5.5, start);
+  let phase = 0;
+  for (let i = 0; i < mainSamples; i++) {
+    const t = i / sr;
+    // Piezo kristalin ilk anda yüksek frekanstan oturması (3.5ms chirp)
+    const instFreq = t < 0.0035 ? freqHz * (1.0 + 0.09 * (1 - t / 0.0035)) : freqHz;
+    phase += (2 * Math.PI * instFreq) / sr;
 
-  const sqGain = audioCtx.createGain();
-  sqGain.gain.value = 0.45;
-  const sinGain = audioCtx.createGain();
-  sinGain.gain.value = 0.75;
+    // Zebra/Datalogic barkod okuyucu harmonik yapısı (güçlü 1., 3. ve 5. harmonikler + hafif 2. harmonik)
+    const raw =
+      0.62 * Math.sin(phase) +
+      0.16 * Math.sin(2 * phase) +
+      0.34 * Math.sin(3 * phase) +
+      0.14 * Math.sin(5 * phase);
 
-  // Barkod okuyucu zarfı: anında keskin başlar, düz devam eder, aniden kesilir
-  const peak = Math.min(vol * 1.15, 1.0);
-  gain.gain.setValueAtTime(0.0001, start);
-  gain.gain.linearRampToValueAtTime(peak, start + 0.003);
-  gain.gain.setValueAtTime(peak, start + Math.max(0.01, dur - 0.006));
-  gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    // Anında açılan (1.5ms) ve bıçak gibi kesilen (3ms) piezo zarfı
+    let env = 1.0;
+    if (t < 0.0015) env = t / 0.0015;
+    else if (t > durSec - 0.003) env = Math.max(0, (durSec - t) / 0.003);
 
-  oscSq.connect(filter).connect(sqGain).connect(gain);
-  oscSin.connect(sinGain).connect(gain);
-  gain.connect(audioCtx.destination);
+    data[i] = raw * env * amp;
+  }
 
-  oscSq.start(start);
-  oscSin.start(start);
-  oscSq.stop(start + dur + 0.01);
-  oscSin.stop(start + dur + 0.01);
-  scanNodes.push(oscSq, oscSin, gain);
+  // Kasa tezgahı kısa akustik yansıması (gerçek mekan hissi verir, "dandik" bilgisayar bip'i gibi duyulmaz)
+  for (let i = 0; i < mainSamples; i++) {
+    if (i + echoDelay < len) {
+      data[i + echoDelay] += data[i] * 0.22;
+    }
+  }
+  return buf;
 }
 
 /**
- * Ceza sesi: Kasiyerin üst üste 3 ürünü rastgele aralıklarla barkod okuyucudan geçirmesi ("Dıt! ... Dı-dıt!").
- * Bazen bir "dıt" bitmesine çok az kala diğeri üstüne biner, toplam ~0.5-1.0 sn içinde biter.
+ * Ceza anında kasiyerin 3 ürünü rastgele hızlarla barkod okuyucudan geçirmesi ("Dıt! ... Dı-dıt!").
+ * Bazen bir barkod sesinin bitmesine çok az kala diğeri üstüne biner.
  */
 function chime() {
   ensureAudio();
-  // Önceki çalan barkod sesleri varsa temizle (birbirine karışmasın)
-  for (const n of scanNodes) {
-    try { n.stop?.(); n.disconnect?.(); } catch {}
-  }
-  scanNodes = [];
+  if (settings.vol <= 0.001) return;
 
-  let cursor = audioCtx.currentTime + 0.01;
-  const scanCount = 3;
+  // Önceki çalan ses varsa durdur (sonraki cezayla asla karışmaz)
+  for (const s of activeScanSources) {
+    try { s.stop(); s.disconnect(); } catch {}
+  }
+  activeScanSources = [];
+
+  const now = audioCtx.currentTime + 0.005;
+  let offset = 0;
+  const scanCount = 3; // 3 kez barkod okutma
 
   for (let i = 0; i < scanCount; i++) {
-    const dur = 0.075 + Math.random() * 0.032; // 75ms - 107ms arası net barkod "dıt" süresi
-    barcodeBeep(cursor, dur, settings.vol);
+    // Her okutma 58ms - 82ms arası keskin market "DIT!" sesi
+    const dur = 0.058 + Math.random() * 0.024;
+    const freq = 2715 + (Math.random() - 0.5) * 30;
+    const buf = createBarcodeBuffer(dur, freq, settings.vol);
 
-    // Sonraki barkod okutma zamanı: tamamen rastgele!
-    // %40 ihtimalle mevcut sesin bitmesine çok az kala (10-25ms kala) üstüne binerek başlar ("dı-dıt!"),
-    // %60 ihtimalle rastgele 45ms - 340ms arası kasiyer el çabukluğu boşluğu bırakır.
-    if (Math.random() < 0.42) {
-      const overlap = 0.010 + Math.random() * 0.016;
-      cursor += Math.max(0.045, dur - overlap);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(now + offset);
+    activeScanSources.push(src);
+
+    // Bir sonraki okutmanın ne zaman başlayacağı tamamen rastgele:
+    // %45 ihtimalle mevcut sesin bitmesine çok kısa süre kala (8ms - 22ms kala) öteki başlar ("dı-dıt!")
+    // %55 ihtimalle 35ms - 260ms arası rastgele kasiyer boşluğu bırakır
+    if (Math.random() < 0.45) {
+      const earlyOverlap = 0.008 + Math.random() * 0.014;
+      offset += Math.max(0.038, dur - earlyOverlap);
     } else {
-      const gap = 0.045 + Math.random() * 0.30;
-      cursor += dur + gap;
+      const randomGap = 0.035 + Math.random() * 0.23;
+      offset += dur + randomGap;
     }
   }
 }
+
 function beep(freq = 880) {
   ensureAudio();
-  tone(freq, audioCtx.currentTime, 0.18, Math.max(settings.vol, 0.15));
+  if (settings.vol <= 0.001) return;
+  const buf = createBarcodeBuffer(0.07, freq === 880 ? 2400 : freq * 2.5, Math.max(settings.vol, 0.2));
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+  src.start();
 }
 
 // ───────────────────────── Ceza ─────────────────────────
@@ -306,7 +303,7 @@ function punish(reason) {
   log.prepend(li);
 }
 
-// ───────────────────────── 6D Saf Fiziksel Analiz (Kalibrasyondan Bağımsız!) ─────────────────────────
+// ───────────────────────── Geometri & Keskin Bakış Analizi ─────────────────────────
 const RAD = 180 / Math.PI;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
@@ -324,13 +321,17 @@ const median = (arr) => {
 };
 
 /**
- * ÖNEMLİ: Bu fonksiyon hiçbir kalibrasyon değişkenine (calib.openBase vb.) bağlı DEĞİLDİR!
- * Böylece kalibrasyon sırasında kaydedilen koordinat sistemi ile canlı takip %100 aynı kalır.
+ * Yüzden 2D (x, y) bakış açısını çıkarır.
+ * - Sadece ÜST YÜZ (şakaklar, göz köşeleri, burun köprüsü, alın) ve GÖZLER kullanılır (el çenedeyken bozulmaz).
+ * - Hiçbir kalibrasyon değişkenine bağlı değildir (kalibrasyon öncesi ve sonrası koordinatlar %100 aynıdır, asla kaymaz!).
+ * - Telefona / eldeki nesneye bakarken oluşan aşağı göz eğimi (eyeLookDown), göz kapağı kapanması ve yakın odak (eyeLookIn)
+ *   doğrudan dikey bakış açısını (+y) aşağı doğru güçlendirir; böylece telefona baktığında haritadaki nokta
+ *   mavi ekran kutusunun dışına net biçimde çıkar!
  */
 function analyze(lm, blendCategories, W, H) {
   const P = (i) => ({ x: lm[i].x * W, y: lm[i].y * H, z: lm[i].z * W });
 
-  // 1) Şakak (127, 356) ve Göz/Burun Köprüsü (33, 133, 263, 362, 6, 168) hibrit kafa açısı
+  // 1) Şakak (127, 356) ve Burun Köprüsü (6, 168) + Üst-Yüz Normali ile Kafa Açısı
   const templeL = P(127), templeR = P(356);
   const templeMid = mid(templeL, templeR);
   const faceW = len2(sub(templeR, templeL)) || 1;
@@ -344,8 +345,8 @@ function analyze(lm, blendCategories, W, H) {
     z: (P(10).z + P(151).z + P(9).z) / 3,
   };
 
-  const pitch2D = ((noseBridge.y - templeMid.y) / faceW) * 120;
-  const yaw2D   = ((noseBridge.x - templeMid.x) / faceW) * 120;
+  const pitch2D = ((noseBridge.y - templeMid.y) / faceW) * 115;
+  const yaw2D   = ((noseBridge.x - templeMid.x) / faceW) * 115;
 
   let n = cross(sub(rightEyeMid, leftEyeMid), sub(forehead, noseBridge));
   const nl = Math.hypot(n.x, n.y, n.z) || 1;
@@ -354,15 +355,15 @@ function analyze(lm, blendCategories, W, H) {
   const yaw3D   = Math.atan2(n.x, -n.z) * RAD;
   const pitch3D = Math.asin(clamp(n.y, -1, 1)) * RAD;
 
-  const headX = yaw2D * 0.6 + yaw3D * 0.4;
-  const headY = pitch2D * 0.65 + pitch3D * 0.35;
+  const headX = yaw2D * 0.55 + yaw3D * 0.45;
+  const headY = pitch2D * 0.60 + pitch3D * 0.40;
 
-  // 2) Saf İris konumu, Göz açıklığı (open) ve Yakınsama (Vergence)
+  // 2) İris konumu ve Göz Açıklığı
   const eyeDefs = [
-    { a: 33, b: 133, outer: 33, inner: 133, up: 159, lo: 145, iris: 468 },
-    { a: 362, b: 263, outer: 263, inner: 362, up: 386, lo: 374, iris: 473 },
+    { a: 33, b: 133, up: 159, lo: 145, iris: 468 },
+    { a: 362, b: 263, up: 386, lo: 374, iris: 473 },
   ];
-  let ox = 0, oy = 0, open = 0, irisVerg = 0;
+  let ox = 0, oy = 0, open = 0;
   for (const e of eyeDefs) {
     const A = P(e.a), B = P(e.b), c = mid(A, B);
     const w = len2(sub(B, A)) || 1;
@@ -374,14 +375,10 @@ function analyze(lm, blendCategories, W, H) {
     ox += ((d.x * u.x + d.y * u.y) / w) * 0.5;
     oy += ((d.x * v.x + d.y * v.y) / w) * 0.5;
     open += (len2(sub(P(e.up), P(e.lo))) / w) * 0.5;
-
-    const distToInner = len2(sub(irisPt, P(e.inner))) / w;
-    const distToOuter = len2(sub(irisPt, P(e.outer))) / w;
-    irisVerg += (distToOuter - distToInner) * 0.5;
   }
 
-  // 3) Saf Blendshape değerleri
-  let lookDown = 0, lookUp = 0, bsX = 0, bsVerg = 0, blinkScore = 0;
+  // 3) Blendshape Göz Bakışı
+  let lookDown = 0, lookUp = 0, bsX = 0, lookInBoth = 0, blinkScore = 0;
   if (blendCategories && blendCategories.length) {
     const bs = {};
     for (let i = 0; i < blendCategories.length; i++) {
@@ -392,130 +389,30 @@ function analyze(lm, blendCategories, W, H) {
     lookUp   = ((bs.eyeLookUpLeft || 0)   + (bs.eyeLookUpRight || 0))   * 0.5;
     const lookRightImg = ((bs.eyeLookInLeft || 0)  + (bs.eyeLookOutRight || 0)) * 0.5;
     const lookLeftImg  = ((bs.eyeLookOutLeft || 0) + (bs.eyeLookInRight || 0))  * 0.5;
-    const lookInBoth   = ((bs.eyeLookInLeft || 0)  + (bs.eyeLookInRight || 0))  * 0.5;
-    const lookOutBoth  = ((bs.eyeLookOutLeft || 0) + (bs.eyeLookOutRight || 0)) * 0.5;
+    lookInBoth = Math.min(bs.eyeLookInLeft || 0, bs.eyeLookInRight || 0);
 
-    bsX = (lookRightImg - lookLeftImg) * 26;
-    bsVerg = (lookInBoth - lookOutBoth) * 15;
+    bsX = (lookRightImg - lookLeftImg) * 24;
     blinkScore = ((bs.eyeBlinkLeft || 0) + (bs.eyeBlinkRight || 0)) * 0.5;
   }
 
-  // Saf dikey göz açısı (kalibrasyona bağımlı hiçbir sabit içermez!)
-  const netLookDown = (lookDown - lookUp) * 42 + oy * 140;
+  const dGain = settings.downGain || 1.4;
+  // Aşağı / Eldeki telefona bakış güçlendirici (sabit fiziksel eşiklerle çalışır, kalibrasyonu asla bozmaz!)
+  const extraDownBoost = Math.pow(Math.max(0, lookDown - 0.16), 1.3) * 75 * dGain;
+  const nearHandBoost  = Math.max(0, lookInBoth - 0.12) * 28 * dGain;
+
   const eyeX = ox * 125 + bsX;
-  const eyeY = netLookDown;
-  const vergence = irisVerg * 45 + bsVerg;
+  const eyeY = (oy * 135 + (lookDown - lookUp) * 42) * dGain + extraDownBoost + nearHandBoost;
 
   return {
     x: headX + eyeX,
     y: headY + eyeY,
-    headY,
-    lookDown: netLookDown,
+    downDeg: eyeY,
     open,
-    verg: vergence,
     blinkScore,
   };
 }
 
-// ───────────────────────── El & Nesne Görsel Tespiti (HandLandmarker + ObjectDetector) ─────────────────────────
-function detectHandsAndObjects(faceLm, now) {
-  if (!settings.handDetect || calibrating) {
-    activeThreat = null;
-    activeBoxes = [];
-    return;
-  }
-  const boxes = [];
-  let foundThreat = null;
-
-  // 1) ObjectDetector: Kamerada telefon, kitap, kumanda, bardak, oyuncak vb. herhangi bir nesne var mı?
-  if (objDetector) {
-    try {
-      const objRes = objDetector.detectForVideo(video, now);
-      if (objRes?.detections) {
-        const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
-        for (const det of objRes.detections) {
-          const cat = det.categories?.[0];
-          if (!cat) continue;
-          const name = cat.categoryName.toLowerCase();
-          if (IGNORED_OBJECTS.has(name)) continue;
-          const bb = det.boundingBox;
-          // Yüzün kendisini nesne sanmasın
-          if (bb && bb.width < vw * 0.75 && cat.score >= 0.32) {
-            const labelTr = name === "cell phone" ? "Telefon 📱" : `Nesne (${name})`;
-            foundThreat = `Kamerada ${labelTr} tutulduğu algılandı`;
-            boxes.push({
-              x: bb.originX / vw,
-              y: bb.originY / vh,
-              w: bb.width / vw,
-              h: bb.height / vh,
-              label: labelTr,
-            });
-          }
-        }
-      }
-    } catch {}
-  }
-
-  // 2) HandLandmarker: Kamerada el var mı? (Çenede sabit duran el hariç elde bir şey tutma / ele bakma)
-  if (handLandmarker) {
-    try {
-      const handRes = handLandmarker.detectForVideo(video, now);
-      const hands = handRes?.landmarks || [];
-      if (hands.length > 0 && faceLm) {
-        const chin = faceLm[152];
-        const jawL = faceLm[234], jawR = faceLm[454];
-        const faceH = Math.hypot(chin.x - faceLm[10].x, chin.y - faceLm[10].y) || 0.25;
-
-        // İki el birden ekrandaysa kesinlikle bir şeyle (telefon/nesne) uğraşıyordur
-        if (hands.length >= 2) {
-          foundThreat = "İki elinle bir nesne/telefon tutuyorsun 🖐️";
-        }
-
-        for (const h of hands) {
-          let minX = 1, maxX = 0, minY = 1, maxY = 0;
-          for (const pt of h) {
-            if (pt.x < minX) minX = pt.x;
-            if (pt.x > maxX) maxX = pt.x;
-            if (pt.y < minY) minY = pt.y;
-            if (pt.y > maxY) maxY = pt.y;
-          }
-          const hCenter = { x: (minX + maxX) * 0.5, y: (minY + maxY) * 0.5 };
-          const indexTip = h[8], thumbTip = h[4], wrist = h[0];
-
-          // El çeneye / yanağa mı dayalı?
-          const distToChin = Math.hypot(hCenter.x - chin.x, hCenter.y - chin.y);
-          const distTipToChin = Math.hypot(indexTip.x - chin.x, indexTip.y - chin.y);
-          const distToJawL = Math.hypot(hCenter.x - jawL.x, hCenter.y - jawL.y);
-          const distToJawR = Math.hypot(hCenter.x - jawR.x, hCenter.y - jawR.y);
-          const minFaceDist = Math.min(distToChin, distTipToChin, distToJawL, distToJawR);
-
-          // Çeneden uzakta (göğüs/ekran önünde) tutulan el VEYA başparmak-işaret parmağı nesne kavrama pozisyonu
-          const isRestingOnChin = minFaceDist < faceH * 0.58 && wrist.y > chin.y - 0.05;
-
-          if (!isRestingOnChin) {
-            foundThreat = foundThreat || "Ekran önünde elinde nesne/telefon tutuyorsun 🖐️";
-            boxes.push({ x: minX, y: minY, w: maxX - minX, h: maxY - minY, label: "El / Nesne 🖐️" });
-          } else if (gaze && calib.screen?.length >= 5) {
-            // El çenede olsa bile gözler aşağıya (ele doğru) kaydıysa yakala!
-            const screenOpenMed = median(calib.screen.map((p) => p[4]));
-            if (gaze.open < screenOpenMed - 0.032) {
-              foundThreat = "Eline / elindeki nesneye bakıyorsun 👀";
-              boxes.push({ x: minX, y: minY, w: maxX - minX, h: maxY - minY, label: "Ele Bakış 👀" });
-            }
-          }
-        }
-      }
-    } catch {}
-  }
-
-  activeBoxes = boxes;
-  if (foundThreat) {
-    activeThreat = foundThreat;
-    activeThreatUntil = now + 750;
-  }
-}
-
-// ── Konveks Örtü & 6D Sınıflandırıcı ──
+// ── Konveks Örtü & Harita Geometrisi ──
 function convexHull(pts) {
   if (!pts || pts.length < 3) return pts ? pts.map((p) => [p[0], p[1]]) : [];
   const p = pts.map((q) => [q[0], q[1]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -556,10 +453,16 @@ function hullDist(p, h) {
 
 function rebuildHulls() {
   hulls = {};
+  centers = {};
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, countPts = 0;
   for (const k in ALL_REGIONS) {
     const pts = calib[k] || [];
     hulls[k] = convexHull(pts);
+    if (pts.length) {
+      centers[k] = [median(pts.map((p) => p[0])), median(pts.map((p) => p[1]))];
+    } else {
+      centers[k] = null;
+    }
     for (let i = 0; i < pts.length; i++) {
       const px = -pts[i][0], py = pts[i][1];
       if (px < minX) minX = px;
@@ -570,146 +473,53 @@ function rebuildHulls() {
     }
   }
   calibBounds = countPts
-    ? { x0: minX - 10, x1: maxX + 10, y0: minY - 10, y1: maxY + 10, hasPoints: true }
-    : { x0: -28, x1: 28, y0: -20, y1: 32, hasPoints: false };
+    ? { x0: minX - 12, x1: maxX + 12, y0: minY - 12, y1: maxY + 12, hasPoints: true }
+    : { x0: -30, x1: 30, y0: -22, y1: 38, hasPoints: false };
 }
 
 const hasRegions = () => Object.keys(ALLOWED_REGIONS).some((k) => (calib[k]?.length || 0) >= 3);
 
 /**
- * 6 Boyutlu Mesafe (x, y, headY, lookDown, open, verg)
- * Ekran ile Eldeki Nesne/Telefon aynı (x, y) doğrultusunda olsa bile:
- * - Göz kapağı açıklığı (open),
- * - Göz küresi aşağı eğimi (lookDown),
- * - Kafa eğimi (headY) ve
- * - Göz bebeği yakınsaması (verg)
- * üzerinden iki durumu birbirinden kesin olarak ayırır!
+ * Net, Şeffaf ve Hatasız Odak Hesabı:
+ * Haritadaki nokta izinli mavi/mor/turuncu bölgenin içindeyse her zaman 0 (Odaklı) döner!
+ * Eğer kullanıcı kırmızı "Telefon/El" bölgesini işaretlediyse ve nokta o kırmızı bölgenin içine
+ * (ekran merkezinden uzağa) girdiyse anında yakalar!
  */
-function dist6D(g, q, sens) {
-  const dx = g.x - q[0];
-  const dy = (g.y - q[1]) * 1.25;
-  if (q.length < 6) return Math.hypot(dx, dy);
-  const dHeadY = (g.headY - q[2]) * 0.9 * sens;
-  const dLook  = (g.lookDown - q[3]) * 1.35 * sens;
-  const dOpen  = (g.open - q[4]) * 260 * sens;
-  const dVerg  = (g.verg - q[5]) * 2.1 * sens;
-  return Math.hypot(dx, dy, dHeadY, dLook, dOpen, dVerg);
-}
-
-function evaluateFocus(g, now) {
+function evaluateFocus(g) {
   const p = [g.x, g.y];
   const tol = settings.tol;
-  const sens = settings.handSens || 1.6;
 
-  // 1) Kamerada el / nesne / telefon yakalandıysa anında ceza!
-  if (activeThreat && now < activeThreatUntil) {
-    return { d: 1.75, reason: activeThreat };
+  // 1) Eğer kırmızı "Telefon / El" yasak alanı tanımlıysa ve bakış noktası doğrudan kırmızı alana girdiyse:
+  if (hulls.phone && hulls.phone.length >= 3 && centers.phone) {
+    const phoneDist = hullDist(p, hulls.phone);
+    const dToPhoneCenter = Math.hypot(p[0] - centers.phone[0], p[1] - centers.phone[1]);
+    const dToScreenCenter = centers.screen
+      ? Math.hypot(p[0] - centers.screen[0], p[1] - centers.screen[1])
+      : Infinity;
+
+    // Nokta kırmızı yasak bölgenin içindeyse VE ekranın merkezinden çok telefonun merkezine yakınsa:
+    if (phoneDist <= 1.5 && dToPhoneCenter < dToScreenCenter * 0.92) {
+      return { d: 1.5, reason: "🚫 Elindeki telefona / yasaklı alana baktın" };
+    }
   }
 
-  // 2) İzinli bölgelere olan 2D + 6D mesafeyi hesapla
-  let best2DDist = Infinity;
-  let bestAllowed6D = Infinity;
-  let localNeighbors = [];
-
+  // 2) İzinli bölgelere (Ekran, Tablet, Ek Alan) olan uzaklık
+  let best = Infinity;
   for (const k in ALLOWED_REGIONS) {
-    const pts = calib[k];
-    if (!pts || pts.length < 3) continue;
-    const hDist = hullDist(p, hulls[k]);
-
-    let minPt2D = Infinity;
-    for (let i = 0; i < pts.length; i++) {
-      const q = pts[i];
-      const d2 = Math.hypot(p[0] - q[0], p[1] - q[1]);
-      if (d2 < minPt2D) minPt2D = d2;
-      const d6 = dist6D(g, q, sens);
-      if (d6 < bestAllowed6D) bestAllowed6D = d6;
-    }
-
-    // Konveks örtü içinde olsa bile gerçek kalibrasyon noktalarından uzaksa (şişkinlik) izin verme
-    const effective2D = Math.max(hDist, Math.max(0, minPt2D - tol * 1.05));
-    if (effective2D < best2DDist) {
-      best2DDist = effective2D;
-      localNeighbors = pts;
-    }
+    const d = hullDist(p, hulls[k]);
+    if (d < best) best = d;
   }
-
-  let score = best2DDist / tol;
-  let customReason = "Odak alanının dışına baktın";
-
-  // 3) Eğer kullanıcı "Elde Nesne/Telefon" kalibrasyonunu yaptıysa (2. Aşama):
-  // 6 boyutlu uzayda el/telefon profiline ekran profilinden daha yakınsa (veya telefon bölgesindeyse) ANINDA YAKALA!
-  if (calib.phone && calib.phone.length >= 3) {
-    let bestPhone6D = Infinity;
-    let bestPhone2D = Infinity;
-    for (let i = 0; i < calib.phone.length; i++) {
-      const q = calib.phone[i];
-      const d2 = Math.hypot(p[0] - q[0], p[1] - q[1]);
-      if (d2 < bestPhone2D) bestPhone2D = d2;
-      const d6 = dist6D(g, q, sens);
-      if (d6 < bestPhone6D) bestPhone6D = d6;
-    }
-    const phoneHullD = hullDist(p, hulls.phone);
-
-    // 6D sınıflandırıcı: Ekranın tam önünde olsa bile göz/kapak/derinlik el profiline daha yakınsa yakala!
-    const ratio = bestPhone6D / Math.max(bestAllowed6D, 0.1);
-    if (ratio < 0.96 * (sens / 1.4) || (phoneHullD <= tol * 0.6 && ratio < 1.12)) {
-      const phoneScore = Math.max(1.45, (1.15 / Math.max(ratio, 0.3)));
-      if (phoneScore > score) {
-        score = phoneScore;
-        customReason = "🚨 Ekran önünde elindeki telefona / nesneye baktın!";
-      }
-    }
-  }
-
-  // 4) Ekran içindeyken yerel göz kapağı / göz eğimi / yakın odak sapması kontrolü
-  if (localNeighbors.length >= 5) {
-    const closest = localNeighbors
-      .map((q) => ({ q, d: Math.hypot(p[0] - q[0], p[1] - q[1]) }))
-      .sort((a, b) => a.d - b.d)
-      .slice(0, 6);
-
-    let expHeadY = 0, expLookDown = 0, expOpen = 0, expVerg = 0, cnt = 0;
-    for (const item of closest) {
-      if (item.q.length >= 6) {
-        expHeadY    += item.q[2];
-        expLookDown += item.q[3];
-        expOpen     += item.q[4];
-        expVerg     += item.q[5];
-        cnt++;
-      }
-    }
-    if (cnt > 0) {
-      expHeadY /= cnt;
-      expLookDown /= cnt;
-      expOpen /= cnt;
-      expVerg /= cnt;
-
-      // O ekran noktasında olması gerekenden daha kısık göz kapağı, daha aşağı göz eğimi veya daha yüksek yakın odak
-      const lidDropExcess  = Math.max(0, (expOpen - g.open) - (0.022 / sens)) * 220;
-      const lookDownExcess = Math.max(0, (g.lookDown - expLookDown) - (3.2 / sens)) * 1.1;
-      const vergExcess     = Math.max(0, (g.verg - expVerg) - (1.8 / sens)) * 2.5;
-
-      const mismatchPenalty = ((lidDropExcess + lookDownExcess + vergExcess) / tol) * 0.45 * sens;
-      if (mismatchPenalty > 0.25) {
-        score += mismatchPenalty;
-        if (score > 1.0) {
-          customReason = "👀 Gözlerin ekran yerine elindeki nesneye odaklandı!";
-        }
-      }
-    }
-  }
-
-  return { d: score, reason: customReason };
+  return { d: best / tol, reason: "Odak alanının dışına (telefona/etrafa) baktın" };
 }
 
-/** Kalibrasyon sırasındaki uç sıçramaları (%86 en temiz merkez) kırpar */
+/** Kalibrasyon sırasındaki uç sıçramaları temizler */
 function cleanPoints(pts) {
   if (pts.length < 10) return pts;
   const cx = median(pts.map((p) => p[0])), cy = median(pts.map((p) => p[1]));
   const d = pts.map((p) => Math.hypot(p[0] - cx, p[1] - cy));
   const sortedD = [...d].sort((a, b) => a - b);
-  const p86 = sortedD[Math.floor(sortedD.length * 0.86)] || 8;
-  const lim = p86 * 1.15 + 1.5;
+  const p90 = sortedD[Math.floor(sortedD.length * 0.90)] || 10;
+  const lim = p90 * 1.2 + 2;
   return pts.filter((_, i) => d[i] <= lim);
 }
 
@@ -719,25 +529,7 @@ function capPoints(pts) {
   return Array.from({ length: MAX_POINTS }, (_, i) => pts[Math.floor(i * step)]);
 }
 
-/** Yasaklı el/telefon noktalarıyla çakışan ekran alt kenar noktalarını oyup çıkarır */
-function carveOutPhoneFromAllowed() {
-  if (!calib.phone || calib.phone.length < 5) return;
-  for (const k of ["screen", "tablet"]) {
-    if (!calib[k] || calib[k].length < 12) continue;
-    const filtered = calib[k].filter((pt) => {
-      const gPt = { x: pt[0], y: pt[1], headY: pt[2], lookDown: pt[3], open: pt[4], verg: pt[5] };
-      let minD6 = Infinity;
-      for (let i = 0; i < calib.phone.length; i++) {
-        const d6 = dist6D(gPt, calib.phone[i], 1.4);
-        if (d6 < minD6) minD6 = d6;
-      }
-      return minD6 > settings.tol * 1.15;
-    });
-    if (filtered.length >= 8) calib[k] = filtered;
-  }
-}
-
-// ───────────────────────── Çift Aşamalı Keskin Kalibrasyon ─────────────────────────
+// ───────────────────────── Kalibrasyon ─────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ov = $("calOverlay"), dot = $("dot"), calText = $("calText"), calProg = $("calProgress"), calBadge = $("calPhaseBadge");
 
@@ -765,17 +557,36 @@ function moveDot(a, b, ms, prog0, prog1) {
   });
 }
 
-/**
- * 📺 Ekran Kalibrasyonu:
- * AŞAMA 1: Kırmızı noktayı takip ederek ekranın 6D profilini çıkarır.
- * AŞAMA 2 (Otomatik): Hemen ardından 4 saniye boyunca ekranın önünde elinde telefon/nesne tutuyormuş gibi baktırır
- * ve o bakışı "Yasaklı Bölge" olarak kaydedip ekrandan kesip çıkarır!
- */
-async function calibrateScreenAndHand() {
+function finishSampling(target, append) {
+  const s = sampling;
+  sampling = null;
+  if (cancelCalib || !s) {
+    setStatus("idle", "Kalibrasyon iptal edildi");
+    return;
+  }
+  const pts = cleanPoints(s.samples);
+  if (pts.length < 10) {
+    setStatus("bad", "Yüz/gözler yeterince algılanamadı, kameraya bakarak tekrar dene");
+    return;
+  }
+  calib[target] = capPoints(append ? (calib[target] || []).concat(pts) : pts);
+  saveCalib();
+  awayMs = 0;
+  isAway = false;
+  setStatus(
+    "ok",
+    target === "phone"
+      ? "🚫 Telefon / El noktası kırmızı yasak bölge olarak haritaya eklendi ✓"
+      : `✅ ${ALL_REGIONS[target].label} alanı başarıyla kaydedildi ✓`
+  );
+  drawMap(true);
+}
+
+async function calibrateScreen() {
   calibrating = true;
   cancelCalib = false;
   calProg.style.width = "0%";
-  calBadge.textContent = "AŞAMA 1 / 2 • EKRAN ALANI";
+  calBadge.textContent = "EKRAN KALİBRASYONU";
   calBadge.classList.remove("danger");
   ov.classList.remove("hidden");
   dot.classList.remove("hidden");
@@ -783,71 +594,24 @@ async function calibrateScreenAndHand() {
   await sleep(400);
 
   const path = [
-    [0.06, 0.08], [0.94, 0.08], [0.94, 0.48], [0.06, 0.48],
-    [0.06, 0.86], [0.50, 0.86], [0.94, 0.86], [0.50, 0.48],
-    [0.25, 0.25], [0.75, 0.70], [0.50, 0.48],
+    [0.05, 0.06], [0.95, 0.06], [0.95, 0.50], [0.05, 0.50],
+    [0.05, 0.90], [0.50, 0.90], [0.95, 0.90], [0.50, 0.06], [0.50, 0.50],
   ];
-  calText.textContent = "AŞAMA 1: Kırmızı noktayı GÖZLERİNLE takip et (normal çalışma duruşunu koru)";
+  calText.textContent = "Kırmızı noktayı GÖZLERİNLE takip et (normal oturuşunu koru)";
   placeDot(path[0]);
   await sleep(1100);
-  calText.textContent = "Ekran bakış ve göz açıklığı profili kaydediliyor…";
+  calText.textContent = "Ekran alanı kaydediliyor…";
   sampling = { samples: [] };
   const segs = path.length - 1;
   for (let i = 1; i < path.length; i++) {
     if (cancelCalib) break;
-    await moveDot(path[i - 1], path[i], 820, (i - 1) / segs, i / segs);
+    await moveDot(path[i - 1], path[i], 900, (i - 1) / segs, i / segs);
   }
-  const screenSamples = sampling ? cleanPoints(sampling.samples) : [];
-  sampling = null;
-  dot.classList.add("hidden");
-
-  if (!cancelCalib && screenSamples.length >= 10) {
-    calib.screen = capPoints(screenSamples);
-    beep(660);
-
-    // AŞAMA 2: Ekran önünde elde telefon / nesne tutma simülasyonu
-    calBadge.textContent = "AŞAMA 2 / 2 • ELDE TELEFON / NESNE YASAĞI";
-    calBadge.classList.add("danger");
-    calProg.style.width = "0%";
-    for (let i = 3; i > 0; i--) {
-      if (cancelCalib) break;
-      calText.textContent = `AŞAMA 2 (${i}): Şimdi ekranın önünde ELİNDE TELEFON veya NESNE tutuyormuş gibi eline bak!`;
-      await sleep(1000);
-    }
-    if (!cancelCalib) {
-      beep(520);
-      sampling = { samples: [] };
-      const steps = 40;
-      for (let i = 0; i < steps; i++) {
-        if (cancelCalib) break;
-        const rem = Math.ceil(((steps - i) * 100) / 1000);
-        calText.textContent = `🚫 Ekran önünde elindeki telefona/nesneye bakmaya devam et… (${rem} sn)`;
-        calProg.style.width = `${((i + 1) / steps) * 100}%`;
-        await sleep(100);
-      }
-      const phoneSamples = sampling ? cleanPoints(sampling.samples) : [];
-      sampling = null;
-      if (phoneSamples.length >= 8) {
-        calib.phone = capPoints(phoneSamples);
-        carveOutPhoneFromAllowed();
-      }
-      beep(990);
-    }
-  }
-
+  await sleep(200);
   if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
   ov.classList.add("hidden");
   dot.classList.add("hidden");
-
-  if (cancelCalib || screenSamples.length < 10) {
-    setStatus("bad", cancelCalib ? "Kalibrasyon iptal edildi" : "Yüz/gözler yeterince algılanamadı, tekrar dene");
-  } else {
-    saveCalib();
-    awayMs = 0;
-    isAway = false;
-    setStatus("ok", "✅ Ekran ve Elde Telefon/Nesne ayrımı başarıyla kalibre edildi!");
-    drawMap(true);
-  }
+  finishSampling("screen", false);
   calibrating = false;
 }
 
@@ -856,7 +620,7 @@ async function calibrateFree(target) {
   cancelCalib = false;
   calProg.style.width = "0%";
   const isPhone = target === "phone";
-  calBadge.textContent = isPhone ? "YASAKLI AÇI TANITIMI" : `${ALL_REGIONS[target].label.toUpperCase()} KALİBRASYONU`;
+  calBadge.textContent = isPhone ? "YASAKLI TELEFON / EL NOKTASI" : `${ALL_REGIONS[target].label.toUpperCase()} KALİBRASYONU`;
   calBadge.classList.toggle("danger", isPhone);
   const label = ALL_REGIONS[target].label.toLowerCase();
   ov.classList.remove("hidden");
@@ -864,42 +628,27 @@ async function calibrateFree(target) {
   for (let i = 3; i > 0; i--) {
     if (cancelCalib) break;
     calText.textContent = isPhone
-      ? `${i}… Şimdi elinde telefon veya nesne tuttuğun yere bak!`
+      ? `${i}… Şimdi elinde telefon tuttuğun noktaya bak (ekrana bakma, sadece telefona bak)!`
       : `${i}… İlk bip sesinden sonra ${label} alanının köşelerine ve ortasına bak.`;
-    await sleep(950);
+    await sleep(900);
   }
   if (!cancelCalib) {
-    beep(660);
+    beep(880);
     sampling = { samples: [] };
-    const steps = isPhone ? 40 : 55;
+    const steps = isPhone ? 32 : 55;
     for (let i = 0; i < steps; i++) {
       if (cancelCalib) break;
       const rem = Math.ceil(((steps - i) * 100) / 1000);
       calText.textContent = isPhone
-        ? `🚫 Elindeki telefona/nesneye bakmaya devam et… (${rem} sn)`
+        ? `🚫 Sadece elindeki telefona bakmaya devam et… (${rem} sn)`
         : `${ALL_REGIONS[target].label} alanının tamamını gözlerinle tara… (${rem} sn)`;
       calProg.style.width = `${((i + 1) / steps) * 100}%`;
       await sleep(100);
     }
-    beep(990);
+    beep(1100);
   }
   ov.classList.add("hidden");
-  const s = sampling;
-  sampling = null;
-  if (!cancelCalib && s) {
-    const pts = cleanPoints(s.samples);
-    if (pts.length >= 8) {
-      calib[target] = capPoints(target === "extra" || isPhone ? (calib[target] || []).concat(pts) : pts);
-      if (isPhone) carveOutPhoneFromAllowed();
-      saveCalib();
-      awayMs = 0;
-      isAway = false;
-      setStatus("ok", `${ALL_REGIONS[target].label} kaydedildi ✓`);
-      drawMap(true);
-    } else {
-      setStatus("bad", "Yeterli veri alınamadı, kameraya bakarak tekrar dene");
-    }
-  }
+  finishSampling(target, target === "extra");
   calibrating = false;
 }
 
@@ -914,20 +663,8 @@ function drawOverlay(lm, color) {
     overlay.height = vh;
   }
   octx.clearRect(0, 0, vw, vh);
-
-  // Yakalanan el veya nesne kutularını çiz
-  if (activeBoxes.length) {
-    octx.strokeStyle = "#ff5c77";
-    octx.lineWidth = 3;
-    octx.fillStyle = "rgba(255, 92, 119, 0.18)";
-    for (const b of activeBoxes) {
-      const rx = b.x * vw, ry = b.y * vh, rw = b.w * vw, rh = b.h * vh;
-      octx.fillRect(rx, ry, rw, rh);
-      octx.strokeRect(rx, ry, rw, rh);
-    }
-  }
-
   if (!lm) return;
+
   octx.fillStyle = color;
   for (let i = 0; i < KEY_LANDMARKS.length; i++) {
     const p = lm[KEY_LANDMARKS[i]];
@@ -974,10 +711,10 @@ function drawMap(force = false) {
     if (k !== "phone") {
       mctx.lineWidth = settings.tol * sc * 2;
       mctx.lineJoin = "round";
-      mctx.strokeStyle = ALL_REGIONS[k].color + "1c";
+      mctx.strokeStyle = ALL_REGIONS[k].color + "20";
       mctx.stroke();
     }
-    mctx.fillStyle = ALL_REGIONS[k].color + (k === "phone" ? "48" : "2e");
+    mctx.fillStyle = ALL_REGIONS[k].color + (k === "phone" ? "48" : "30");
     mctx.fill();
     mctx.lineWidth = 2;
     mctx.strokeStyle = ALL_REGIONS[k].color;
@@ -987,7 +724,7 @@ function drawMap(force = false) {
   if (gaze) {
     const [x, y] = T([gaze.x, gaze.y]);
     mctx.beginPath();
-    mctx.arc(x, y, 7, 0, Math.PI * 2);
+    mctx.arc(x, y, 7.5, 0, Math.PI * 2);
     mctx.fillStyle = isAway ? "#ff5c77" : "#38d996";
     mctx.fill();
     mctx.lineWidth = 2;
@@ -999,7 +736,7 @@ function drawMap(force = false) {
     mctx.fillStyle = "#6c768d";
     mctx.font = "14px -apple-system, sans-serif";
     mctx.textAlign = "center";
-    mctx.fillText("Başlamak için “📺 Ekran + El Ayrımını Kalibre Et” butonuna bas", W / 2, H / 2);
+    mctx.fillText("Başlamak için “📺 Ekranı kalibre et” butonuna bas", W / 2, H / 2);
   }
 }
 
@@ -1016,7 +753,7 @@ function tick() {
   fpsFrames++;
   if (now - fpsLastAt >= 1000) {
     const fps = Math.round((fpsFrames * 1000) / (now - fpsLastAt));
-    setText("hudBadge", `${fps} FPS • 6D`);
+    setText("hudBadge", `${fps} FPS${settings.ecoMode ? " • Eko" : ""}`);
     fpsFrames = 0;
     fpsLastAt = now;
   }
@@ -1024,14 +761,6 @@ function tick() {
   const res = landmarker.detectForVideo(video, now);
   const lm = res.faceLandmarks?.[0];
   const blends = res.faceBlendshapes?.[0]?.categories;
-
-  // Saniyede ~6 kez El & Nesne Tespiti çalıştır
-  if (now - lastAuxCheckAt > 165) {
-    lastAuxCheckAt = now;
-    detectHandsAndObjects(lm, now);
-  }
-  const threatActive = activeThreat && now < activeThreatUntil;
-  setText("telObj", threatActive ? `🚨 ${activeThreat}` : "Temiz ✓");
 
   if (lm && lm.length >= 478) {
     const f = analyze(lm, blends, video.videoWidth || 640, video.videoHeight || 480);
@@ -1044,10 +773,10 @@ function tick() {
     }
 
     let raw;
-    if (isBlinking && closedMs < 380 && lastValidRaw) {
+    if (isBlinking && closedMs < 400 && lastValidRaw) {
       raw = lastValidRaw;
-    } else if (closedMs >= 1500 && lastValidRaw) {
-      raw = { ...lastValidRaw, y: lastValidRaw.y + 35, lookDown: lastValidRaw.lookDown + 35 };
+    } else if (closedMs >= 1600 && lastValidRaw) {
+      raw = { ...lastValidRaw, y: lastValidRaw.y + 35 };
     } else {
       raw = f;
       lastValidRaw = raw;
@@ -1056,21 +785,19 @@ function tick() {
     gaze = {
       x: fX.filter(raw.x, now),
       y: fY.filter(raw.y, now),
-      headY: fHeadY.filter(raw.headY, now),
-      lookDown: fDown.filter(raw.lookDown, now),
-      open: fOpen.filter(raw.open, now),
-      verg: fVerg.filter(raw.verg, now),
+      downDeg: raw.downDeg,
     };
 
-    setText("telEyeDown", `${gaze.lookDown >= 0 ? "+" : ""}${gaze.lookDown.toFixed(1)}° (${Math.round(gaze.open * 100)}%)`);
-    setText("telVerg", `${gaze.verg >= 0 ? "+" : ""}${gaze.verg.toFixed(1)}`);
+    setText("telGaze", `${(-gaze.x).toFixed(0)}° / ${gaze.y.toFixed(0)}°`);
+    setText("telEyeDown", `${gaze.downDeg >= 0 ? "+" : ""}${gaze.downDeg.toFixed(1)}°`);
 
     if (sampling && !isBlinking) {
-      sampling.samples.push([gaze.x, gaze.y, gaze.headY, gaze.lookDown, gaze.open, gaze.verg]);
+      sampling.samples.push([gaze.x, gaze.y]);
     }
   } else {
     gaze = null;
-    fX.reset(); fY.reset(); fHeadY.reset(); fDown.reset(); fOpen.reset(); fVerg.reset();
+    fX.reset();
+    fY.reset();
   }
 
   drawMap();
@@ -1081,29 +808,30 @@ function tick() {
 
   if (!hasRegions()) {
     drawOverlay(lm, "#8f98ad");
-    setStatus("idle", lm ? "📺 Başlamak için “Ekran + El Ayrımını Kalibre Et” butonuna bas" : "Yüz aranıyor… Kameraya bak");
+    setStatus("idle", lm ? "📺 Başlamak için önce ekranı kalibre et" : "Yüz aranıyor… Kameraya bak");
     return;
   }
 
   let away, reason;
   if (gaze) {
     faceLostFired = false;
-    const ev = evaluateFocus(gaze, now);
+    const ev = evaluateFocus(gaze);
     const d = ev.d;
-    away = isAway ? d > 0.85 : d > 1.0;
+    away = isAway ? d > 0.84 : d > 1.0;
     reason = ev.reason;
-    setText("distVal", d < 0.2 ? "tam odaklı ✓" : `${d.toFixed(2)}x`);
+    setText("distVal", d === 0 ? "alanın içinde ✓" : `${d.toFixed(2)}x`);
     setBar("distBar", Math.min(d / 2, 1) * 100, away ? "#ff5c77" : "#38d996");
+    setText("telState", away ? "⚠️ Alan Dışı" : "✅ Odaklı");
   } else {
     away = settings.faceLost && !faceLostFired;
     reason = "Yüzün kameradan çıktı";
     setText("distVal", "yüz yok");
+    setText("telState", "🙈 Yüz Yok");
   }
   isAway = away;
 
-  const speedMult = threatActive ? 1.5 : 1.0;
   const delayMs = settings.delay * 1000;
-  awayMs = away ? awayMs + dt * speedMult : Math.max(0, awayMs - dt * 1.8);
+  awayMs = away ? awayMs + dt : Math.max(0, awayMs - dt * 2.0);
   setText("awayVal", `${(awayMs / 1000).toFixed(1)} / ${settings.delay} sn`);
   setBar("awayBar", Math.min(awayMs / delayMs, 1) * 100);
 
@@ -1121,7 +849,7 @@ function tick() {
   if (away) {
     setStatus(
       awayMs > delayMs * 0.4 ? "bad" : "warn",
-      coolingDown ? "🚨 Yakalandın! İşine odaklan." : gaze ? `⚠️ ${reason}` : "🙈 Yüzün görünmüyor"
+      coolingDown ? "🚨 Yakalandın! İşine odaklan." : gaze ? `👀 ${reason}` : "🙈 Yüzün görünmüyor"
     );
     drawOverlay(lm, "#ff5c77");
   } else {
@@ -1150,7 +878,7 @@ ticker.onmessage = () => {
 };
 
 // ───────────────────────── Model & Kamera Başlatma ─────────────────────────
-async function loadModels() {
+async function loadModel() {
   const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
   const faceOpts = (delegate) => ({
     baseOptions: { modelAssetPath: FACE_MODEL_URL, delegate },
@@ -1161,39 +889,8 @@ async function loadModels() {
     minFacePresenceConfidence: 0.45,
     minTrackingConfidence: 0.45,
   });
-  let face;
-  try { face = await FaceLandmarker.createFromOptions(fileset, faceOpts("GPU")); }
-  catch { face = await FaceLandmarker.createFromOptions(fileset, faceOpts("CPU")); }
-
-  // El dedektörünü (HandLandmarker) arka planda yükle
-  if (!handLandmarker) {
-    HandLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numHands: 2,
-      minHandDetectionConfidence: 0.35,
-      minHandPresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
-    }).then((h) => { handLandmarker = h; }).catch(() => {
-      HandLandmarker.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate: "CPU" },
-        runningMode: "VIDEO",
-        numHands: 2,
-        minHandDetectionConfidence: 0.35,
-      }).then((h) => { handLandmarker = h; }).catch((e) => console.warn("HandLandmarker:", e));
-    });
-  }
-
-  // Nesne dedektörünü (ObjectDetector) arka planda yükle
-  if (!objDetector) {
-    ObjectDetector.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: OBJ_MODEL_URL, delegate: "CPU" },
-      runningMode: "VIDEO",
-      scoreThreshold: 0.32,
-      maxResults: 4,
-    }).then((d) => { objDetector = d; }).catch((e) => console.warn("ObjDetector:", e));
-  }
-  return face;
+  try { return await FaceLandmarker.createFromOptions(fileset, faceOpts("GPU")); }
+  catch { return await FaceLandmarker.createFromOptions(fileset, faceOpts("CPU")); }
 }
 
 const calBtns = () => document.querySelectorAll(".calBtn");
@@ -1218,9 +915,9 @@ $("startBtn").addEventListener("click", async () => {
   }
   $("startBtn").disabled = true;
   try {
-    setText("loadMsg", "Yüz, el ve nesne yapay zeka motorları hazırlanıyor…");
+    setText("loadMsg", "Yüz analiz motoru ve kamera hazırlanıyor…");
     const [model, stream] = await Promise.all([
-      landmarker ? Promise.resolve(landmarker) : loadModels(),
+      landmarker ? Promise.resolve(landmarker) : loadModel(),
       navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 640 },
@@ -1273,7 +970,7 @@ $("shareBtn").addEventListener("click", async () => {
   }
 });
 
-$("cal-screen").addEventListener("click", () => !calibrating && calibrateScreenAndHand());
+$("cal-screen").addEventListener("click", () => !calibrating && calibrateScreen());
 $("cal-tablet").addEventListener("click", () => !calibrating && calibrateFree("tablet"));
 $("cal-extra").addEventListener("click", () => !calibrating && calibrateFree("extra"));
 $("cal-phone").addEventListener("click", () => !calibrating && calibrateFree("phone"));

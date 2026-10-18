@@ -4,18 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Kasiyer Önleyici 🛒</title>
-  <meta name="description" content="Kamerayla 6 boyutlu göz, iris derinliği, el ve nesne takibi yapan Kasiyer Önleyici. Ekrandan ayrılıp elindeki telefona veya nesneye bakarsan BİM, A101 veya ŞOK iş başvurusu açar!" />
+  <meta name="description" content="Kamerayla göz ve bakış takibi yapan Kasiyer Önleyici. Ekrandan ayrılıp elindeki telefona veya etrafa bakarsan barkod sesiyle BİM, A101 veya ŞOK iş başvurusu açar!" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛒</text></svg>" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="preconnect" href="https://storage.googleapis.com" crossorigin />
-  <link rel="stylesheet" href="style.css?v=4.0" />
+  <link rel="stylesheet" href="style.css?v=5.0" />
 </head>
 <body>
   <header>
     <div class="headerTop">
       <div>
-        <h1>🛒 Kasiyer Önleyici <span class="badge">v4.0 Yapay Zeka + El/Nesne Kilidi</span></h1>
-        <p class="sub">Dersine ve ekranına odaklan! Elinde telefon/nesne tutar veya başka yere dalarsan BİM, A101 veya ŞOK iş başvurusu açılır 👀</p>
+        <h1>🛒 Kasiyer Önleyici <span class="badge">v5.0 Keskin Odak</span></h1>
+        <p class="sub">Ekranına veya tabletine odaklan! Telefona, elindeki nesneye veya etrafa dalarsan kasa barkod sesiyle iş başvurusu açılır 👀</p>
       </div>
       <div class="headerActions">
         <button id="pipBtn" class="ghost smallBtn" disabled title="Arka planda yavaşlamaması için küçük yüzen pencere açar">📌 Mini Pencere (PiP)</button>
@@ -48,7 +48,7 @@
 
       <div class="meter">
         <div class="meterLabel">
-          <span>Sapma & El/Nesne Riski</span><span id="distVal">–</span>
+          <span>Odak alanına uzaklık</span><span id="distVal">–</span>
         </div>
         <div class="bar"><div id="distBar"></div><div class="threshold" title="Ceza sınırı (1.0x)"></div></div>
         <div class="meterLabel small">
@@ -59,19 +59,19 @@
 
       <div class="card mapCard">
         <div class="mapHeader">
-          <h2>Canlı 6D Bakış & Yasaklı Alan Haritası</h2>
+          <h2>Canlı Bakış Haritası</h2>
           <small class="legend">
             <span><i style="background:#4dabf7"></i>Ekran (İzinli)</span>
-            <span><i style="background:#b197fc"></i>Tablet</span>
-            <span><i style="background:#ffa94d"></i>Ek alan</span>
-            <span><i style="background:#ff5c77"></i>Elde Nesne/Telefon (Yasak)</span>
+            <span><i style="background:#b197fc"></i>Tablet (İzinli)</span>
+            <span><i style="background:#ffa94d"></i>Ek alan (İzinli)</span>
+            <span><i style="background:#ff5c77"></i>Telefon / El (Yasak)</span>
           </small>
         </div>
         <canvas id="map" width="640" height="280"></canvas>
         <div class="telemetryRow">
-          <span>Göz Kapağı / Eğim: <b id="telEyeDown">–</b></span>
-          <span>Yakın Odak: <b id="telVerg">–</b></span>
-          <span>El & Nesne Tespiti: <b id="telObj">Temiz ✓</b></span>
+          <span>Yatay / Dikey Bakış: <b id="telGaze">–</b></span>
+          <span>Aşağı Bakış Eğimi: <b id="telEyeDown">–</b></span>
+          <span>Durum: <b id="telState">Hazır</b></span>
         </div>
       </div>
 
@@ -90,40 +90,41 @@
       </div>
 
       <div class="card">
-        <h2>2. Çift Aşamalı Keskin Kalibrasyon</h2>
+        <h2>2. Kalibrasyon</h2>
         <p class="hint">
-          <b>📺 Ekran Kalibrasyonu</b> iki aşamalıdır: Önce ekrandaki kırmızı noktayı takip edersin, hemen ardından <b>4 saniye boyunca ekranın önünde elinde telefon/nesne tutuyormuş gibi eline bakarsın</b>. Böylece sistem ekran ile elindeki nesneyi %100 ayırır!
+          <b>1) 📺 Ekranı kalibre et:</b> Kırmızı noktayı gözlerinle takip et.<br/>
+          <b>2) 🚫 Telefon / El noktasını yasakla (İsteğe bağlı):</b> Ekran önünde elinde telefon/nesne tuttuğun yere 3 saniye bak; haritada kırmızı yasak alan oluşur ve o noktaya baktığında anında yakalar.
         </p>
         <div class="row">
-          <button id="cal-screen" class="calBtn" disabled>📺 Ekran + El Ayrımını Kalibre Et</button>
+          <button id="cal-screen" class="calBtn" disabled>📺 Ekranı kalibre et</button>
           <span id="tag-screen" class="tag">yok</span>
           <button class="ghost clr" data-r="screen" title="Sıfırla">✕</button>
         </div>
         <div class="row">
-          <button id="cal-phone" class="calBtn dangerBtn" disabled>🚫 Ekstra Yasaklı El/Nesne Açısı Ekle</button>
+          <button id="cal-phone" class="calBtn dangerBtn" disabled>🚫 El / Telefon noktasını yasakla (3 sn)</button>
           <span id="tag-phone" class="tag">yok</span>
           <button class="ghost clr" data-r="phone" title="Sıfırla">✕</button>
         </div>
         <div class="row">
-          <button id="cal-tablet" class="calBtn" disabled>📲 Tableti kalibre et (İzinli)</button>
+          <button id="cal-tablet" class="calBtn" disabled>📲 Tableti kalibre et</button>
           <span id="tag-tablet" class="tag">yok</span>
           <button class="ghost clr" data-r="tablet" title="Sıfırla">✕</button>
         </div>
         <div class="row">
-          <button id="cal-extra" class="calBtn" disabled>➕ Ek alan ekle (İzinli)</button>
+          <button id="cal-extra" class="calBtn" disabled>➕ Ek alan ekle</button>
           <span id="tag-extra" class="tag">yok</span>
           <button class="ghost clr" data-r="extra" title="Sıfırla">✕</button>
         </div>
-        <p class="hint">🖐️ <b>El & Nesne Dedektörü Aktif:</b> Kamerada elinde bir nesne/telefon tuttuğunu veya ekran karşısında gözlerinin eline odaklandığını anında yakalar (elin çenede sabit dururken ceza vermez).</p>
+        <p class="hint">💡 Haritadaki nokta mavi ekran alanının içindeyken <b>asla</b> yanlış hata vermez; mavi alandan çıktığında veya kırmızı yasak alana girdiğinde yakalar.</p>
       </div>
 
       <div class="card">
         <h2>3. Hassasiyet & Ayarlar</h2>
-        <label>Sınır toleransı (düşük = çok sıkı, yüksek = esnek): <b id="tolVal"></b>
-          <input type="range" id="tol" min="1.5" max="10" step="0.5" />
+        <label>Kenar hoşgörü payı (düşük = sıkı sınır, yüksek = geniş): <b id="tolVal"></b>
+          <input type="range" id="tol" min="2" max="15" step="0.5" />
         </label>
-        <label>Elde nesne / yakın odak yakalama gücü: <b id="handSensVal"></b>
-          <input type="range" id="handSens" min="0.8" max="3.0" step="0.1" />
+        <label>Aşağı / telefona bakış duyarlılığı: <b id="downGainVal"></b>
+          <input type="range" id="downGain" min="0.8" max="2.5" step="0.1" />
         </label>
         <label>Kaç saniye bakmazsan yakalansın: <b id="delayVal"></b>
           <input type="range" id="delay" min="0.5" max="10" step="0.5" />
@@ -131,15 +132,14 @@
         <label>İki ceza arası bekleme süresi: <b id="cooldownVal"></b>
           <input type="range" id="cooldown" min="5" max="180" step="5" />
         </label>
-        <label>Uyarı ses seviyesi: <b id="volVal"></b>
+        <label>Barkod ses seviyesi: <b id="volVal"></b>
           <input type="range" id="vol" min="0" max="1" step="0.05" />
         </label>
         <label class="check"><input type="checkbox" id="faceLost" /> Yüz kameradan çıkarsa da yakala</label>
-        <label class="check"><input type="checkbox" id="handDetect" /> 🖐️ Kamerada elde tutulan nesneyi / eli yakala</label>
         <label class="check"><input type="checkbox" id="ecoMode" /> ⚡ Düşük güç modu (daha az pil & CPU kullanımı)</label>
         <div class="row btnRow">
-          <button id="testSound" class="ghost">🔊 Barkod sesini dene</button>
-          <button id="testOpen" class="ghost">🛒 Cezayı dene (Pop-up izni)</button>
+          <button id="testSound" class="ghost">🔊 Barkod sesini dene (Dıt-Dıt!)</button>
+          <button id="testOpen" class="ghost">🛒 Cezayı dene</button>
         </div>
       </div>
 
@@ -153,13 +153,13 @@
   <div id="calOverlay" class="hidden">
     <div id="dot" class="hidden"></div>
     <div class="calBox">
-      <div id="calPhaseBadge" class="calPhaseBadge">AŞAMA 1 / 2</div>
+      <div id="calPhaseBadge" class="calPhaseBadge">KALİBRASYON</div>
       <p id="calText"></p>
       <div class="calProgressWrap"><div id="calProgress"></div></div>
       <button id="calCancel" class="ghost smallBtn">İptal (ESC)</button>
     </div>
   </div>
 
-  <script type="module" src="app.js?v=4.1"></script>
+  <script type="module" src="app.js?v=5.0"></script>
 </body>
 </html>
