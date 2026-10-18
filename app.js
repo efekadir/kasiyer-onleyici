@@ -194,7 +194,8 @@ function saveCalib() {
   }
 }
 
-// ───────────────────────── Ses ─────────────────────────
+// ───────────────────────── Ses (Market Kasiyer Barkod Okuyucu "Dıt-Dıt") ─────────────────────────
+let scanNodes = [];
 function ensureAudio() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === "suspended") audioCtx.resume();
@@ -205,17 +206,85 @@ function tone(freq, start, dur, vol) {
   o.type = "sine";
   o.frequency.value = freq;
   g.gain.setValueAtTime(0.0001, start);
-  g.gain.linearRampToValueAtTime(vol, start + 0.02);
+  g.gain.linearRampToValueAtTime(vol, start + 0.015);
   g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
   o.connect(g).connect(audioCtx.destination);
   o.start(start);
-  o.stop(start + dur + 0.05);
+  o.stop(start + dur + 0.04);
 }
+/** Tek bir gerçekçi süpermarket barkod okuyucu (piezo buzzer ~2580 Hz) "DIT!" sesi */
+function barcodeBeep(start, dur, vol) {
+  if (vol <= 0.001) return;
+  const freq = 2580 + (Math.random() - 0.5) * 35; // gerçekçi mikro frekans farkı
+
+  // Piezo tınısı: kare dalga + rezonant bant geçiren filtre + saf sinüs gövde
+  const oscSq = audioCtx.createOscillator();
+  const oscSin = audioCtx.createOscillator();
+  const filter = audioCtx.createBiquadFilter();
+  const gain = audioCtx.createGain();
+
+  oscSq.type = "square";
+  oscSq.frequency.setValueAtTime(freq, start);
+  oscSin.type = "sine";
+  oscSin.frequency.setValueAtTime(freq, start);
+
+  filter.type = "bandpass";
+  filter.frequency.setValueAtTime(freq, start);
+  filter.Q.setValueAtTime(5.5, start);
+
+  const sqGain = audioCtx.createGain();
+  sqGain.gain.value = 0.45;
+  const sinGain = audioCtx.createGain();
+  sinGain.gain.value = 0.75;
+
+  // Barkod okuyucu zarfı: anında keskin başlar, düz devam eder, aniden kesilir
+  const peak = Math.min(vol * 1.15, 1.0);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.linearRampToValueAtTime(peak, start + 0.003);
+  gain.gain.setValueAtTime(peak, start + Math.max(0.01, dur - 0.006));
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+
+  oscSq.connect(filter).connect(sqGain).connect(gain);
+  oscSin.connect(sinGain).connect(gain);
+  gain.connect(audioCtx.destination);
+
+  oscSq.start(start);
+  oscSin.start(start);
+  oscSq.stop(start + dur + 0.01);
+  oscSin.stop(start + dur + 0.01);
+  scanNodes.push(oscSq, oscSin, gain);
+}
+
+/**
+ * Ceza sesi: Kasiyerin üst üste 3 ürünü rastgele aralıklarla barkod okuyucudan geçirmesi ("Dıt! ... Dı-dıt!").
+ * Bazen bir "dıt" bitmesine çok az kala diğeri üstüne biner, toplam ~0.5-1.0 sn içinde biter.
+ */
 function chime() {
   ensureAudio();
-  const t = audioCtx.currentTime;
-  tone(659.25, t, 0.75, settings.vol);
-  tone(987.77, t + 0.14, 0.75, settings.vol);
+  // Önceki çalan barkod sesleri varsa temizle (birbirine karışmasın)
+  for (const n of scanNodes) {
+    try { n.stop?.(); n.disconnect?.(); } catch {}
+  }
+  scanNodes = [];
+
+  let cursor = audioCtx.currentTime + 0.01;
+  const scanCount = 3;
+
+  for (let i = 0; i < scanCount; i++) {
+    const dur = 0.075 + Math.random() * 0.032; // 75ms - 107ms arası net barkod "dıt" süresi
+    barcodeBeep(cursor, dur, settings.vol);
+
+    // Sonraki barkod okutma zamanı: tamamen rastgele!
+    // %40 ihtimalle mevcut sesin bitmesine çok az kala (10-25ms kala) üstüne binerek başlar ("dı-dıt!"),
+    // %60 ihtimalle rastgele 45ms - 340ms arası kasiyer el çabukluğu boşluğu bırakır.
+    if (Math.random() < 0.42) {
+      const overlap = 0.010 + Math.random() * 0.016;
+      cursor += Math.max(0.045, dur - overlap);
+    } else {
+      const gap = 0.045 + Math.random() * 0.30;
+      cursor += dur + gap;
+    }
+  }
 }
 function beep(freq = 880) {
   ensureAudio();
